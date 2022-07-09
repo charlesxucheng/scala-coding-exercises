@@ -21,7 +21,7 @@ object Fix34 {
 
   def fix34Shift(input: Seq[Int]): Seq[Int] = fix34RecShift(StateShift(Vector.empty, 0, input)).processed
 
-  def fix34Swap(input: Seq[Int]): Seq[Int] = fix34RecSwap(StateSwap(Vector.empty, Normal(), Seq.empty, Queue.empty, input)).processed
+  def fix34Swap(input: Seq[Int]): Seq[Int] = fix34RecSwap(StateSwap(Vector.empty, Balanced(), input)).processed
 
   @tailrec
   def fix34RecShift(inState: StateShift): StateShift = {
@@ -50,132 +50,112 @@ object Fix34 {
     }
   }
 
-  // TODO: Improve State model
   trait State
-  sealed case class ThreeStaging() extends State
-  sealed case class FourStaging() extends State
-  sealed case class Normal() extends State
+
+  /**
+   * @param staging the list of items that are being accumulated while the state is:
+   *                (a) having one or more outstanding 3s and waiting for matching 4s, or
+   *                (b) having one or more outstanding 4s and waiting for matching 3s
+   * @param stagingQ The queue that holds the outstanding segments of lists. When a match is found
+   */
+  sealed case class MoreThrees(staging: Seq[Int], stagingQ: Queue[Seq[Int]]) extends State
+  sealed case class MoreFours(staging: Seq[Int], stagingQ: Queue[Seq[Int]]) extends State
+  sealed case class Balanced() extends State
 
   /**
    * Recursive implementation of the actual logic of Fix34 (Swap).
    * The logic using recursion is long because we need to accumulate segments of the inputs to match the other symbol.
    * @param processed Elements whose position will not change further
    * @param state What state it is currently in
-   * @param staging the list of items that are being accumulated while the state is:
-   *                (a) having one or more outstanding 3s and waiting for matching 4s, or
-   *                (b) having one or more outstanding 4s and waiting for matching 3s
-   * @param stagingQ The queue that holds the outstanding segments of lists. When a match is found
    * @param remaining The remaining list of items to be processed
    */
-  case class StateSwap(processed: Seq[Int], state: State, staging: Seq[Int], stagingQ: Queue[Seq[Int]], remaining: Seq[Int])
+  case class StateSwap(processed: Seq[Int], state: State, remaining: Seq[Int])
 
   @tailrec
   def fix34RecSwap(inState: StateSwap): StateSwap = {
     inState.remaining match {
       case Nil =>
         inState.state match {
-          case Normal() => inState
+          case Balanced() => inState
           case _ => throw new IllegalArgumentException("Number of 3s and number of 4s do not match")
         }
       case head :: tail =>
         val newState = inState.state match {
-          case Normal() =>
+          case Balanced() =>
               if (head == 3) {
                 StateSwap(
                   processed = inState.processed,
-                  state = ThreeStaging(),
-                  staging = Vector(head),
-                  stagingQ = inState.stagingQ,
+                  state = MoreThrees(Vector(head), Queue.empty),
                   remaining = tail)
               } else if (head == 4) {
                   StateSwap(
                     processed = inState.processed,
-                    state = FourStaging(),
-                    staging = Vector(head),
-                    stagingQ = inState.stagingQ,
+                    state = MoreFours(Vector(head), Queue.empty),
                     remaining = tail)
 
               } else StateSwap(
                 processed = inState.processed :+ head,
-                state = Normal(),
-                staging = inState.staging,
-                stagingQ = inState.stagingQ,
+                state = Balanced(),
                 remaining = tail
               )
-          case ThreeStaging() =>
+          case MoreThrees(s, sq) =>
             if (head == 3)
               StateSwap(
                 processed = inState.processed,
-                state = inState.state,
-                staging = Vector(head),
-                stagingQ = inState.stagingQ :+ inState.staging,
+                state = MoreThrees(Vector(head), sq :+ s),
                 remaining = tail)
             else if (head == 4) {
-              if (inState.stagingQ.isEmpty) { // The last segment in staging, so this brings the state back to Normal
+              if (sq.isEmpty) { // The last segment in staging, so this brings the state back to Normal
                 val valueToAppend =
-                  if (inState.staging.size == 1) Vector(inState.staging.head, head)
-                  else Vector(inState.staging.head, head) :++ inState.staging.tail.tail :+ inState.staging.tail.head
+                  if (s.size == 1) Vector(s.head, head)
+                  else Vector(s.head, head) :++ s.tail.tail :+ s.tail.head
                 StateSwap(
                   processed = inState.processed :++ valueToAppend,
-                  state = Normal(),
-                  staging = Vector.empty,
-                  stagingQ = Queue.empty,
+                  state = Balanced(),
                   remaining = tail)
               }
               else { // Take first item in the Q and match it with the 4
-                val (segment, remainingQ) = inState.stagingQ.dequeue
+                val (segment, remainingQ) = sq.dequeue
                 assert(segment.size>1, "The segment being matched by a 4 has less than 2 elements. Actual:" + segment.size)
                 assert(segment.head == 3, "The segment being matched by a 4 does not start with 3. Actual:" + segment.head)
                 StateSwap(
                   processed = inState.processed :++
                     Vector(segment.head, head) :++ segment.tail.tail,
-                  state = ThreeStaging(),
-                  staging = inState.staging :+ segment.tail.head,
-                  stagingQ = remainingQ,
+                  state = MoreThrees(s :+ segment.tail.head, remainingQ),
                   remaining = tail)
               }
             }
             else StateSwap(
               processed = inState.processed,
-              state = inState.state,
-              staging = inState.staging :+ head,
-              stagingQ = inState.stagingQ,
+              state = MoreThrees(s :+ head, sq),
               remaining = tail)
-          case FourStaging() =>
+          case MoreFours(s, sq) =>
             if (head == 4)
               StateSwap(
                 processed = inState.processed,
-                state = inState.state,
-                staging = Vector(head),
-                stagingQ = inState.stagingQ :+ inState.staging,
+                state = MoreFours(Vector(head), sq :+ s),
                 remaining = tail)
             else if (head == 3) {
               assert(tail.size > 1)
-              if (inState.stagingQ.isEmpty) { // The last segment in staging, so this brings the state back to Normal
+              if (sq.isEmpty) { // The last segment in staging, so this brings the state back to Normal
                 StateSwap(
                   processed = inState.processed :+
-                    tail.head :++ inState.staging.tail :+ head :+ inState.staging.head,
-                  state = Normal(),
-                  staging = Vector.empty,
-                  stagingQ = Queue.empty,
+                    tail.head :++ s.tail :+ head :+ s.head,
+                  state = Balanced(),
                   remaining = tail.tail)
               }
               else { // Take first item in the Q and match it with the 4
-                val (segment, remainingQ) = inState.stagingQ.dequeue
+                val (segment, remainingQ) = sq.dequeue
                 assert(segment.head == 4, "The segment being matched by a 3 does not start with 4. Actual:" + segment.head)
                 StateSwap(
                   processed = inState.processed :+
-                    tail.head :++ inState.staging.tail,
-                  state = FourStaging(),
-                  staging = inState.staging :+ head :+ segment.head,
-                  stagingQ = remainingQ,
+                    tail.head :++ s.tail,
+                  state = MoreFours(s :+ head :+ segment.head, remainingQ),
                   remaining = tail.tail)
               }
             } else StateSwap(
               processed = inState.processed,
-              state = inState.state,
-              staging = inState.staging :+ head,
-              stagingQ = inState.stagingQ,
+              state = MoreFours(s :+ head, sq),
               remaining = tail
             )
         }
